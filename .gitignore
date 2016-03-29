@@ -30,3 +30,9 @@
 
 # Debug files
 *.dSYM/
+
+# fichier modules compilé
+*.cmd
+modules.order
+.tmp_versions
+*.layout
