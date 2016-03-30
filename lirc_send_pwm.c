@@ -1,7 +1,7 @@
 /*
- * lirc_gpio.c
+ * lirc_send_pwm.c
  *
- * lirc_gpio - Device driver that records pulse- and pause-lengths
+ * lirc_send_pwm - Device driver that records pulse- and pause-lengths
  *              (space-lengths) (just like the lirc_serial driver does)
  *              between GPIO interrupt events.  Tested on a Cubieboard with Allwinner A10
  *        However, everything relies on the gpiolib.c module, so there is a good
@@ -25,6 +25,13 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+
+ a utiliser :
+ int pwm_config(struct pwm_device *pwm, int duty_ns, int period_ns)
+ struct pwm_device *pwm_request(int pwm_id, const char *label)
+ int pwm_enable(struct pwm_device *pwm)
+ void pwm_disable(struct pwm_device *pwm)
+ void pwm_free(struct pwm_device *pwm)
  */
 
 #include <linux/module.h>
@@ -40,13 +47,15 @@
 #include <linux/spinlock.h>
 #include <media/lirc.h>
 #include <media/lirc_dev.h>
-#include <linux/gpio.h>
 #include <plat/sys_config.h>
-#include <../drivers/gpio/gpio-sunxi.h>
+#include <../drivers/misc/pwm-sunxi.h>
+/* hight resolution timer */
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
 
-#define LIRC_DRIVER_NAME "lirc_gpio"
+#define LIRC_DRIVER_NAME "lirc_send_pwm"
 /* this may have to be adapted for different platforms */
-#define LIRC_GPIO_ID_STRING "A1X_GPIO"
+
 #define RBUF_LEN 256
 #define LIRC_TRANSMITTER_LATENCY 256
 
@@ -56,26 +65,24 @@
 #define MAX_UDELAY_US (MAX_UDELAY_MS*1000)
 #endif
 
-#define RX_OFFSET_GPIOCHIP gpio_in_pin - gpiochip->base
-#define TX_OFFSET_GPIOCHIP gpio_out_pin - gpiochip->base
 
-#define dprintk(fmt, args...)                                        \
-do {                                                        \
-if (debug)                                        \
-printk(KERN_DEBUG LIRC_DRIVER_NAME ": "        \
-fmt, ## args);                        \
+
+#define dprintk(fmt, args...)           \
+do {                                    \
+if (debug)                              \
+printk(KERN_DEBUG LIRC_DRIVER_NAME ": " \
+fmt, ## args);                          \
 } while (0)
 
 /* module parameters */
 
 
-/* -1 = auto, 0 = active high, 1 = active low */
-static int sense = -1;
-static struct timeval lasttv = { 0, 0 };
+
 static spinlock_t lock;
 
 /* set the default pwm num only 1 or 2 or A20 */
 static int pwm_num = 1;
+struct pwm_device *pwm_out;
 /* enable debugging messages */
 static int debug;
 
@@ -103,10 +110,24 @@ static unsigned int duty_cycle = 50;
 static unsigned long period;
 static unsigned long pulse_width;
 static unsigned long space_width;
+static unsigned long current_delay;
+static int delay_run;
 
-
+static struct hrtimer hr_timer;
 /* stuff for TX pin */
+enum hrtimer_restart timerdelay( struct hrtimer *timer )
+{
 
+     /* if current_delay > 0 {
+             delay_run = 1;
+             current_delay --;
+             return HRTIMER_RESTART;
+      }
+      else{*/
+        delay_run = 0;
+        return HRTIMER_NORESTART;
+      //}
+}
 static void safe_udelay(unsigned long usecs)
 {
     /*TODO remplacer ceci par quelque chose de plus précis et de moin gourmand en cpu */
@@ -121,37 +142,33 @@ static int init_timing_params(unsigned int new_duty_cycle,
                               unsigned int new_freq)
 {
 
-        /*
-         * period, pulse/space width are kept with 8 binary places -
-         * IE multiplied by 256.
-         */
          int ret;
-        if softcarrier = 1 {
-            if (256 * 1000000L / new_freq * new_duty_cycle / 100 <=
-                LIRC_TRANSMITTER_LATENCY)
-                    return -EINVAL;
-            if (256 * 1000000L / new_freq * (100 - new_duty_cycle) / 100 <=
-                LIRC_TRANSMITTER_LATENCY)
-                    return -EINVAL;
-            duty_cycle = new_duty_cycle;
-            freq = new_freq;
-            period = 256 * 1000000L / freq;
-            pulse_width = period * duty_cycle / 100;
-            space_width = period - pulse_width;
-            /*printk(KERN_INFO "in init_timing_params, freq=%d pulse=%ld, "
-               "space=%ld\n", freq, pulse_width, space_width); */
-               ret = 0; //only one return
-        }
-        else
-        {
-            /* compute pwm parameter */
-            /*TODO mettre de code de calcul PWM ici */
-            ret = 0;
-        }
-        return ret;
+         period = 1000000000L / freq;
+         pulse_width = period * duty_cycle / 100;
+         ret = pwm_config(pwm_out,period,pulse_width);
+
+         return ret;
 }
 
-
+static ssize_t setup_tx(unsigned int pwm){
+    int result;
+    if (pwm == 0 || pwm ==1){
+    pwm_out = pwm_request(pwm, "Ir-pwm-out");
+        if (!pwm_out){
+            goto fail;
+        }
+        period = 1000000000L / freq;
+        pulse_width = period * duty_cycle / 100;
+        result = pwm_config(pwm_out,period,pulse_width);
+        return 0;
+    }else if (pwm == -1 ){
+        goto fail_conf;
+    }
+    fail_conf:
+        free_pwm(pwm_out);,
+    fail:
+        return result;
+}
 static long send_pulse(unsigned long length)
 {
         if (length <= 0)
@@ -167,7 +184,7 @@ static long send_pulse(unsigned long length)
 
 static void send_space(long length)
 {        /*TODO remplacer l'appel gpiochip par pwm */
-        gpiochip->set(gpiochip, TX_OFFSET_GPIOCHIP, invert);
+        //gpiochip->set(gpiochip, TX_OFFSET_GPIOCHIP, invert);
         if (length <= 0)
                 return;
         safe_udelay(length);
@@ -176,73 +193,22 @@ static void send_space(long length)
 /* end of TX stuff */
 
 
-
-/* RX stuff: Handle interrupt and write vals to lirc buffer */
-
-
-
-
-
-
-
-
-
-/* setup pins, rx, tx, interrupts, active low/high.... */
-
-
-
-
-
-static int setup_tx(int new_out_pin)
-{
-	int ret;
-	/* TODO à utiliser pour faire une machine d'état
-   http://www.ibm.com/developerworks/library/l-timers-list/ */
-    return ret;
-}
-
-
-
-
-
 /* called when the character device is opened
    timing params initialized and interrupts activated */
 static int set_use_inc(void *data)
 {
         int result;
         unsigned long flags;
-
         init_timing_params(duty_cycle, freq);
         /* initialize pulse/space widths */
-
-    //initialize timestamp, would not be needed if no RX
-    do_gettimeofday(&lasttv);
-    device_open++;
-
-
-
+        device_open++; //utile?
         return 0;
 }
 
 /* called when character device is closed */
 static void set_use_dec(void *data)
 {
-        unsigned long flags;
-    device_open--;
-
-    if(!irqchip)
-        return;
-
-        /* GPIO Pin Falling/Rising Edge Detect Disable */
-    spin_lock_irqsave(&lock, flags);
-    irqchip->irq_set_type(irqdata, 0);
-    irqchip->irq_mask(irqdata);
-    spin_unlock_irqrestore(&lock, flags);
-
-    free_irq(gpiochip->to_irq(gpiochip, RX_OFFSET_GPIOCHIP), (void *) 0);
-    device_open--;
-    dprintk("freed IRQ %d\n", gpiochip->to_irq(gpiochip, RX_OFFSET_GPIOCHIP));
-
+    device_open--; //utile ?
 }
 
 /* lirc to tx */
@@ -254,9 +220,7 @@ static ssize_t lirc_write(struct file *file, const char *buf,
 
         long delta = 0;
         int *wbuf;
-    if (!gpio_out_pin) {
-        return -ENODEV;
-    }
+
         count = n / sizeof(int);
         if (n % sizeof(int) || count % 2 == 0)
                 return -EINVAL;
@@ -264,14 +228,14 @@ static ssize_t lirc_write(struct file *file, const char *buf,
         if (IS_ERR(wbuf))
                 return PTR_ERR(wbuf);
         spin_lock_irqsave(&lock, flags);
-    dprintk("lirc_write called, offset %d",TX_OFFSET_GPIOCHIP);
+        dprintk("lirc_write called");
         for (i = 0; i < count; i++) {
                 if (i%2)
                         send_space(wbuf[i] - delta);
                 else
                         delta = send_pulse(wbuf[i]);
         }
-        gpiochip->set(gpiochip, TX_OFFSET_GPIOCHIP, invert);
+        //changement etat pin invert
         spin_unlock_irqrestore(&lock, flags);
     if (count>11) {
         dprintk("lirc_write sent %d pulses: no10: %d, no11: %d\n",count,wbuf[10],wbuf[11]);
@@ -360,7 +324,7 @@ static struct lirc_driver driver = {
 /* end of lirc device/driver stuff */
 
 /* now comes THIS driver, above is lirc */
-static struct platform_driver lirc_gpio_driver = {
+static struct platform_driver lirc_send_pwm_driver = {
         .driver = {
                 .name   = LIRC_DRIVER_NAME,
                 .owner  = THIS_MODULE,
@@ -386,18 +350,18 @@ static ssize_t lirc_pwm_show(struct class *class, struct class_attribute *attr, 
 
 static ssize_t lirc_pwm_store(struct class *class, struct class_attribute *attr, const char* buf, size_t size)
 {
-    int new_pin;
+    int new_pwm;
     ssize_t status;
     mutex_lock(&sysfs_lock);
-    sscanf(buf,"%d",&new_pin);
-    status = setup_tx(new_pin) ? : size;
+    sscanf(buf,"%d",&new_pwm);
+    status = setup_tx(new_pwm) ? : size;
     mutex_unlock(&sysfs_lock);
     return status;
 }
 /*fin mise à jour */
 
 
-/* à mettre à jour */
+
 static ssize_t lirc_invert_show(struct class *class, struct class_attribute *attr, char *buf)
 {
     ssize_t status;
@@ -422,61 +386,72 @@ static ssize_t lirc_invert_store(struct class *class, struct class_attribute *at
     return status;
 }
 
-/*fin */
-
-
 
 /* I don't think we need another device, so just put it in the class directory
  * All we need is a way to access some global parameters of this module */
 
-static struct class_attribute lirc_gpio_attrs[] = {
+static struct class_attribute lirc_send_pwm_attrs[] = {
     __ATTR(pwm_num, 0644, lirc_pwm_show, lirc_pwm_store),
     __ATTR(lirc_invert, 0644, lirc_invert_show, lirc_invert_store),
     __ATTR_NULL,
 };
-static struct class lirc_gpio_class = { //TODOI renomage
-    .name = "lirc_gpio",
+static struct class lirc_send_pwm_class = { //TODOI renomage
+    .name = "lirc_send_pwm",
     .owner = THIS_MODULE,
-    .class_attrs = lirc_gpio_attrs,
+    .class_attrs = lirc_send_pwm_attrs,
 };
 
 /* end of sysfs stuff */
 
 /* initialize / free THIS driver and device and a lirc buffer*/
 
-static int __init lirc_gpio_init(void)
+static int __init lirc_send_pwm_init(void)
 {
         int result;
+        int active_periode;
 
         /* Init read buffer. */
         result = lirc_buffer_init(&rbuf, sizeof(int), RBUF_LEN);
         if (result < 0)
                 return -ENOMEM;
 
-        result = platform_driver_register(&lirc_gpio_driver);
+        result = platform_driver_register(&lirc_send_pwm_driver);
         if (result) {
                 printk(KERN_ERR LIRC_DRIVER_NAME
                        ": lirc register returned %d\n", result);
                 goto exit_buffer_free;
         }
 
-        lirc_gpio_dev = platform_device_alloc(LIRC_DRIVER_NAME, 0);
-        if (!lirc_gpio_dev) {
+        lirc_send_pwm_dev = platform_device_alloc(LIRC_DRIVER_NAME, 0);
+        if (!lirc_send_pwm_dev) {
                 result = -ENOMEM;
                 goto exit_driver_unregister;
         }
 
-        result = platform_device_add(lirc_gpio_dev);
+        result = platform_device_add(lirc_send_pwm_dev);
         if (result)
                 goto exit_device_put;
+        //configuration pwm
+
+        result = setup_tx(pwm_num);
+        if (result){
+            goto pwm_free_exit;
+        }
+
 
         return 0;
 
+pwm_free_exit:
+        setup_tx(-1);
+
+exit_device_add:
+        platform_device_unregister(lirc_send_pwm_dev); /*TODO : verify this line */
+
 exit_device_put:
-        platform_device_put(lirc_gpio_dev);
+        platform_device_put(lirc_send_pwm_dev);
 
 exit_driver_unregister:
-        platform_driver_unregister(&lirc_gpio_driver);
+        platform_driver_unregister(&lirc_send_pwm_driver);
 
 exit_buffer_free:
         lirc_buffer_free(&rbuf);
@@ -484,12 +459,13 @@ exit_buffer_free:
         return result;
 }
 
-static void lirc_gpio_exit(void)
+static void lirc_send_pwm_exit(void)
 {
-    setup_tx(0); // frees gpio_out_pin if set
 
-        platform_device_unregister(lirc_gpio_dev);
-        platform_driver_unregister(&lirc_gpio_driver);
+        pwm_disable(pwm_out);
+        pwm_free(pwm_out);
+        platform_device_unregister(lirc_send_pwm_dev);
+        platform_driver_unregister(&lirc_send_pwm_driver);
         lirc_buffer_free(&rbuf);
 }
 
@@ -502,7 +478,7 @@ static int __init lirc_send_pwm_init_module(void)
 {
     int result,temp_in_pin,temp_out_pin;
 
-        result = lirc_gpio_init(); //TODO à renomer
+        result = lirc_send_pwm_init();
         if (result)
                 return result;
     // 'driver' is the lirc driver
@@ -511,7 +487,7 @@ static int __init lirc_send_pwm_init_module(void)
     LIRC_CAN_SEND_PULSE |
     LIRC_CAN_REC_MODE2; // TODO enlever ce qu'il y a en trop
 
-        driver.dev = &lirc_gpio_dev->dev;  // link THIS platform device to lirc driver TODO renomer
+        driver.dev = &lirc_send_pwm_dev->dev;  // link THIS platform device to lirc driver TODO renomer
         driver.minor = lirc_register_driver(&driver);
 
         if (driver.minor < 0) {
@@ -527,7 +503,7 @@ static int __init lirc_send_pwm_init_module(void)
     /* some hacking to get pins initialized on first used */
     /* setup_tx/rx will not do anything if pins would not change */
 
-    result = setup_tx(temp_out_pin);
+    result = setup_tx();
     if (result < 0)
         goto exit_lirc;
     /* dito for rx */
@@ -541,7 +517,7 @@ static int __init lirc_send_pwm_init_module(void)
         }
     }
 
-    result=class_register(&lirc_gpio_class);
+    result=class_register(&lirc_send_pwm_class);
     if (result) {
         goto exit_lirc;
     }
@@ -552,33 +528,33 @@ static int __init lirc_send_pwm_init_module(void)
 exit_lirc:
     /* failed attempt to setup_tx/rx sets pin to 0. */
     /* next call with arg 0 will then not do anything -> only one exit routine */
-        lirc_gpio_exit();
+        lirc_send_pwm_exit();
 
         return result;
 }
 
-static void __exit lirc_gpio_exit_module(void)
+static void __exit lirc_send_pwm_exit_module(void)
 {
 
-        lirc_gpio_exit();
-    class_unregister(&lirc_gpio_class);
+        lirc_send_pwm_exit();
+    class_unregister(&lirc_send_pwm_class);
 
         lirc_unregister_driver(driver.minor);
         printk(KERN_INFO LIRC_DRIVER_NAME ": cleaned up module\n");
 }
 
-module_init(lirc_gpio_init_module);
-module_exit(lirc_gpio_exit_module);
+module_init(lirc_send_pwm_init_module);
+module_exit(lirc_send_pwm_exit_module);
 
 MODULE_DESCRIPTION("Infra-red  blaster driver for PWM-Lib.");
-MODULE_DESCRIPTION("Parameters can be set/changed in /sys/class/lirc_gpio");
+MODULE_DESCRIPTION("Parameters can be set/changed in /sys/class/lirc_send_pwm");
 MODULE_AUTHOR("Matthias Hoelling <mhoel....@gmail.nospam.com");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL");*
 
-module_param(pwm_num, int, S_IRUGO);
+module_param(pwm_num, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(pwm_num, "which PWM used for output");
 
-module_param(invert, int, S_IRUGO);
+module_param(invert, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(invert, "Invert output (0 = off, 1 = on, default off");
 
 module_param(debug, int, S_IRUGO | S_IWUSR);
