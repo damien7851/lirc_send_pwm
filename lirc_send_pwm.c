@@ -86,8 +86,8 @@ struct pwm_device *pwm_out;
 /* enable debugging messages */
 static int debug;
 
-/* 0 = do not invert output, 1 = invert output */
-static int invert = 0;
+/* 1 = active state is hight, 0 = active state is low */
+static int active_state = 1;
 
 /* is the device open, so interrupt must be changed if pins are changed */
 static int device_open = 0;
@@ -110,32 +110,35 @@ static unsigned int duty_cycle = 50;
 static unsigned long period;
 static unsigned long pulse_width;
 static unsigned long space_width;
-static unsigned long current_delay;
-static int delay_run;
+//static unsigned long current_delay;
+//static int delay_run;
 
-static struct hrtimer hr_timer;
-/* stuff for TX pin */
-enum hrtimer_restart timerdelay( struct hrtimer *timer )
-{
-
-     /* if current_delay > 0 {
-             delay_run = 1;
-             current_delay --;
-             return HRTIMER_RESTART;
-      }
-      else{*/
-        delay_run = 0;
-        return HRTIMER_NORESTART;
-      //}
-}
+//static struct hrtimer hr_timer;
+///* stuff for TX pin */
+//enum hrtimer_restart timerdelay( struct hrtimer *timer )
+//{
+//
+//     /* if current_delay > 0 {
+//             delay_run = 1;
+//             current_delay --;
+//             return HRTIMER_RESTART;
+//      }
+//      else{*/
+//        delay_run = 0;
+//        return HRTIMER_NORESTART;
+//      //}
+//}
 static void safe_udelay(unsigned long usecs)
 {
-    /*TODO remplacer ceci par quelque chose de plus précis et de moin gourmand en cpu */
-        while (usecs > MAX_UDELAY_US) {
-                udelay(MAX_UDELAY_US);
-                usecs -= MAX_UDELAY_US;
-        }
-        udelay(usecs);
+    struct timespec delay;
+    if (usecs%1000000 > 0){
+        delay.tv_sec = 1; // delay > 1.99s is truncated
+        delay.tv_nsec =(usecs-1000000)*1000; /* time over 1 second are passed to hrtimer */
+    }else {
+        delay.tv_sec = 0;
+        delay.tv_nsec = usecs * 1000;
+    }
+        hrtimer_nanosleep(&delay,NULL,HRTIMER_MODE_REL,CLOCK_MONOTONIC);
 }
 
 static int init_timing_params(unsigned int new_duty_cycle,
@@ -164,6 +167,8 @@ static ssize_t setup_tx(unsigned int pwm){
     }else if (pwm == -1 ){
         goto fail_conf;
     }
+    pwm_polarity(pwm_out,active_state);
+
     fail_conf:
         free_pwm(pwm_out);,
     fail:
@@ -172,21 +177,19 @@ static ssize_t setup_tx(unsigned int pwm){
 static long send_pulse(unsigned long length)
 {
         if (length <= 0)
-                return 0;
-
-                /*TODO remplacer l'appel gpiochip par pwm */
-                //gpiochip->set(gpiochip, TX_OFFSET_GPIOCHIP, !invert);
-                safe_udelay(length);
-                return 0;
+            return 0;
+        pwm_enable(pwm_out);
+        safe_udelay(length);
+        return 0;
         }
 }
 
 
 static void send_space(long length)
-{        /*TODO remplacer l'appel gpiochip par pwm */
-        //gpiochip->set(gpiochip, TX_OFFSET_GPIOCHIP, invert);
+{
         if (length <= 0)
                 return;
+        pwm_disable(pwm_out);
         safe_udelay(length);
 }
 
@@ -208,6 +211,7 @@ static int set_use_inc(void *data)
 /* called when character device is closed */
 static void set_use_dec(void *data)
 {
+    pwm_disable(pwm_out);
     device_open--; //utile ?
 }
 
@@ -235,7 +239,7 @@ static ssize_t lirc_write(struct file *file, const char *buf,
                 else
                         delta = send_pulse(wbuf[i]);
         }
-        //changement etat pin invert
+        pwm_disable(pwm_out);
         spin_unlock_irqrestore(&lock, flags);
     if (count>11) {
         dprintk("lirc_write sent %d pulses: no10: %d, no11: %d\n",count,wbuf[10],wbuf[11]);
@@ -281,9 +285,10 @@ static long lirc_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 
         case LIRC_SET_SEND_CARRIER:
             result = get_user(value, (__u32 *) arg);
-            if (result==0) // pour moi tous resultats diférent de 0 fait sortir vace la modif seul le 0 fait sortir
+            if (result)
                 return result;
-            if (value > 500000 || value < 20000) //TODO mettre à jour avec les capacité hardware
+            if (value > 500000 || value < 20000) /* this value is widely understood in*/
+                                                 /*the material ability but is a real IR modulation range*/
                 return -EINVAL;
             dprintk("SET_SEND_CARRIER to %d \n",value);
             return init_timing_params(duty_cycle, value);
@@ -343,7 +348,7 @@ static ssize_t lirc_pwm_show(struct class *class, struct class_attribute *attr, 
 {
     ssize_t status;
     mutex_lock(&sysfs_lock);
-    status = sprintf(buf,"%d\n",gpio_out_pin);
+    status = sprintf(buf,"%d\n",pwm_num);
     mutex_unlock(&sysfs_lock);
     return status;
 }
@@ -362,23 +367,23 @@ static ssize_t lirc_pwm_store(struct class *class, struct class_attribute *attr,
 
 
 
-static ssize_t lirc_invert_show(struct class *class, struct class_attribute *attr, char *buf)
+static ssize_t lirc_active_state_show(struct class *class, struct class_attribute *attr, char *buf)
 {
     ssize_t status;
     mutex_lock(&sysfs_lock);
-    status = sprintf(buf,"%d\n",invert);
+    status = sprintf(buf,"%d\n",active_state);
     mutex_unlock(&sysfs_lock);
     return status;
 }
 
-static ssize_t lirc_invert_store(struct class *class, struct class_attribute *attr, const char* buf, size_t size)
+static ssize_t lirc_active_state_store(struct class *class, struct class_attribute *attr, const char* buf, size_t size)
 {
     int try_value;
     ssize_t status=size;
     mutex_lock(&sysfs_lock);
     sscanf(buf,"%d",&try_value);
     if ((try_value==0) || (try_value==1)) {
-        invert=try_value;
+        pwm_polarity(pwm_out,try_value);
     }
     else
         status = -EINVAL;
@@ -392,7 +397,7 @@ static ssize_t lirc_invert_store(struct class *class, struct class_attribute *at
 
 static struct class_attribute lirc_send_pwm_attrs[] = {
     __ATTR(pwm_num, 0644, lirc_pwm_show, lirc_pwm_store),
-    __ATTR(lirc_invert, 0644, lirc_invert_show, lirc_invert_store),
+    __ATTR(lirc_active_state, 0644, lirc_active_state_show, lirc_active_state_store),
     __ATTR_NULL,
 };
 static struct class lirc_send_pwm_class = { //TODOI renomage
@@ -403,7 +408,7 @@ static struct class lirc_send_pwm_class = { //TODOI renomage
 
 /* end of sysfs stuff */
 
-/* initialize / free THIS driver and device and a lirc buffer*/
+/* initialize / free THIS driver and device and a lircconvert_string_to_microseconds buffer*/
 
 static int __init lirc_send_pwm_init(void)
 {
@@ -503,14 +508,7 @@ static int __init lirc_send_pwm_init_module(void)
     /* some hacking to get pins initialized on first used */
     /* setup_tx/rx will not do anything if pins would not change */
 
-    result = setup_tx();
-    if (result < 0)
-        goto exit_lirc;
-    /* dito for rx */
-
-
-
-    if (device_open) {  // this is unlikely, but well...
+     if (device_open) {  // this is unlikely, but well...
         result = set_use_inc((void*) 0);
         if (result<0) {
             goto exit_lirc;
@@ -549,13 +547,14 @@ module_exit(lirc_send_pwm_exit_module);
 MODULE_DESCRIPTION("Infra-red  blaster driver for PWM-Lib.");
 MODULE_DESCRIPTION("Parameters can be set/changed in /sys/class/lirc_send_pwm");
 MODULE_AUTHOR("Matthias Hoelling <mhoel....@gmail.nospam.com");
-MODULE_LICENSE("GPL");*
+MODULE_AUTHOR("Damien Pageot <damien...@gmail.com");
+MODULE_LICENSE("GPL");
 
 module_param(pwm_num, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(pwm_num, "which PWM used for output");
+MODULE_PARM_DESC(pwm_num, "which PWM used for output : 0 or 1");
 
-module_param(invert, int, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(invert, "Invert output (0 = off, 1 = on, default off");
+module_param(active_state, int, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(active_state, "Active state of pwm : 0=active low, 1=active hight");
 
 module_param(debug, int, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(debug, "Enable debugging messages");
