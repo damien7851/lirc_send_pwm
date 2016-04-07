@@ -48,7 +48,7 @@
 #include <media/lirc.h>
 #include <media/lirc_dev.h>
 #include <plat/sys_config.h>
-#include <../drivers/misc/pwm-sunxi.h>
+#include <linux/pwm.h>
 /* hight resolution timer */
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
@@ -110,35 +110,32 @@ static unsigned int duty_cycle = 50;
 static unsigned long period;
 static unsigned long pulse_width;
 static unsigned long space_width;
-//static unsigned long current_delay;
-//static int delay_run;
 
+
+//static const int end = 200;
 //static struct hrtimer hr_timer;
+//static int state; //state of sending
+//static long next_length;
+//static int next_pwm; // 0 disable 1 enable
 ///* stuff for TX pin */
-//enum hrtimer_restart timerdelay( struct hrtimer *timer )
+//enum hrtimer_restart statemachine( struct hrtimer *timer )
 //{
 //
-//     /* if current_delay > 0 {
-//             delay_run = 1;
-//             current_delay --;
-//             return HRTIMER_RESTART;
-//      }
-//      else{*/
-//        delay_run = 0;
-//        return HRTIMER_NORESTART;
-//      //}
+//
+//
+//        if state == end {
+//            return HRTIMER_NORESTART;
+//        }else
+//            return HRTIMER_RESTART
+//
+//
 //}
 static void safe_udelay(unsigned long usecs)
 {
-    struct timespec delay;
-    if (usecs%1000000 > 0){
-        delay.tv_sec = 1; // delay > 1.99s is truncated
-        delay.tv_nsec =(usecs-1000000)*1000; /* time over 1 second are passed to hrtimer */
-    }else {
-        delay.tv_sec = 0;
-        delay.tv_nsec = usecs * 1000;
-    }
-        hrtimer_nanosleep(&delay,NULL,HRTIMER_MODE_REL,CLOCK_MONOTONIC);
+    if usecs>2000 {
+        udelay(2000); //simple protection
+    } else
+    udelay(usecs);
 }
 
 static int init_timing_params(unsigned int new_duty_cycle,
@@ -158,16 +155,17 @@ static ssize_t setup_tx(unsigned int pwm){
     if (pwm == 0 || pwm ==1){
     pwm_out = pwm_request(pwm, "Ir-pwm-out");
         if (!pwm_out){
+            printk(KERN_ERR LIRC_DRIVER_NAME "pwm %d is busy",pwm);
             goto fail;
         }
         period = 1000000000L / freq;
         pulse_width = period * duty_cycle / 100;
         result = pwm_config(pwm_out,period,pulse_width);
-        return 0;
+        return result;
     }else if (pwm == -1 ){
         goto fail_conf;
     }
-    pwm_polarity(pwm_out,active_state);
+    //pwm_polarity(pwm_out,active_state);
 
     fail_conf:
         free_pwm(pwm_out);,
@@ -204,6 +202,7 @@ static int set_use_inc(void *data)
         unsigned long flags;
         init_timing_params(duty_cycle, freq);
         /* initialize pulse/space widths */
+        //TODO add initalisation hrtimer
         device_open++; //utile?
         return 0;
 }
@@ -213,6 +212,7 @@ static void set_use_dec(void *data)
 {
     pwm_disable(pwm_out);
     device_open--; //utile ?
+    //TODO add free hrtimer
 }
 
 /* lirc to tx */
@@ -383,7 +383,7 @@ static ssize_t lirc_active_state_store(struct class *class, struct class_attribu
     mutex_lock(&sysfs_lock);
     sscanf(buf,"%d",&try_value);
     if ((try_value==0) || (try_value==1)) {
-        pwm_polarity(pwm_out,try_value);
+    //    pwm_polarity(pwm_out,try_value);
     }
     else
         status = -EINVAL;
@@ -440,7 +440,9 @@ static int __init lirc_send_pwm_init(void)
 
         result = setup_tx(pwm_num);
         if (result){
+            printk(KERN_ERR LIRC_DRIVER_NAME "setup failed returned %d\n",result);
             goto pwm_free_exit;
+
         }
 
 
@@ -489,8 +491,7 @@ static int __init lirc_send_pwm_init_module(void)
     // 'driver' is the lirc driver
         driver.features = LIRC_CAN_SET_SEND_DUTY_CYCLE |
     LIRC_CAN_SET_SEND_CARRIER |
-    LIRC_CAN_SEND_PULSE |
-    LIRC_CAN_REC_MODE2; // TODO enlever ce qu'il y a en trop
+    LIRC_CAN_SEND_PULSE ; // TODO enlever ce qu'il y a en trop
 
         driver.dev = &lirc_send_pwm_dev->dev;  // link THIS platform device to lirc driver TODO renomer
         driver.minor = lirc_register_driver(&driver);
