@@ -24,7 +24,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA*/
 
 
 #include <linux/module.h>
@@ -52,13 +52,8 @@
 #define RBUF_LEN 256
 #define LIRC_TRANSMITTER_LATENCY 256
 
-#ifndef MAX_UDELAY_MS
-#define MAX_UDELAY_US 5000
-#else
-#define MAX_UDELAY_US (MAX_UDELAY_MS*1000)
-#endif
-
-
+#define MS_TO_NS(x)	(x * 1E6L)
+#define US_TO_NS(x)	(x * 1E3L)
 
 #define dprintk(fmt, args...)           \
 do {                                    \
@@ -103,33 +98,53 @@ static unsigned int duty_cycle = 50;
 static unsigned long period;
 static unsigned long pulse_width;
 static unsigned long space_width;
-
-
-//static const int end = 200;
-//static struct hrtimer hr_timer;
-//static int state; //state of sending
-//static long next_length;
-//static int next_pwm; // 0 disable 1 enable
-///* stuff for TX pin */
-//enum hrtimer_restart statemachine( struct hrtimer *timer )
-//{
-//
-//
-//
-//        if state == end {
-//            return HRTIMER_NORESTART;
-//        }else
-//            return HRTIMER_RESTART
-//
-//
-//}
-static void safe_udelay(unsigned long usecs)
+static int *wbuf; //provient de lirc write puisque'on doit acceder depuis le callsback
+static int wbuflength;
+//TODO a complété
+static const int end = 200;
+static struct hrtimer hr_timer;
+static int state; //state of sending
+static long next_length;
+static int next_pwm; // 0 disable 1 enable
+/* stuff for TX pin */
+enum hrtimer_restart statemachine( struct hrtimer *timer )
 {
-    if usecs>2000 {
-        udelay(2000); //simple protection
-    } else
-    udelay(usecs);
+    ktime interval;
+
+
+    if (state == end || state == wbuflength+1)//TODO verifier la condition de fin
+    {
+        pwm_disable(pwm_out);
+        return HRTIMER_NORESTART;
+        printk (KERN_INFO LIRC_DRIVER_NAME":sending finished or truncated at 200");
+    } else{
+        if (IS_ERR(wbuf))
+        {
+            printk (KERN_ERROR LIRC_DRIVER_NAME":sending called before buffer initialized");
+            return HRTIMER_NORESTART;
+        }
+        if (state%2)  //si impaire
+        {
+            pwm_disable(pwm_out);
+        } else
+            pwm_enable(pwm_out);
+
+
+        interval = ktime_set(0,US_TO_NS(wbuf[state]));
+        hrtimer_forward_now(&hr_timer,interval);
+        state ++;
+        return HRTIMER_RESTART;
+    }
+
+//for (i = 0; i < count; i++) {
+//                if (i%2)
+//                        send_space(wbuf[i] - delta);
+//                else
+//                        delta = send_pulse(wbuf[i]);
+//        }
+//        pwm_disable(pwm_out);
 }
+//fin TODO
 
 static int init_timing_params(unsigned int new_duty_cycle,
                               unsigned int new_freq)
@@ -148,7 +163,8 @@ static int init_timing_params(unsigned int new_duty_cycle,
 static int setup_tx(unsigned int pwm)
 {
     int result;
-
+    ktime_t ktime;
+    state = end; // on initaulise la machine d'état sur arret.
         if (pwm == 0 || pwm ==1) {
             if (pwm_out==NULL){
                 pwm_out = pwm_request(pwm, "Ir-pwm-out");
@@ -162,6 +178,17 @@ static int setup_tx(unsigned int pwm)
                 goto fail;
             }
             result = init_timing_params(duty_cycle,freq);
+            //initialisation timer
+
+            unsigned long delay_in_ms = 200L; // on met un délais initial
+
+            printk("HR Timer module installing\n");
+
+            ktime = ktime_set( 0, MS_TO_NS(delay_in_ms) );
+
+            hrtimer_init( &hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
+            hr_timer.function = &statemachine; //déclaration du callback timer
+            hrtimer_start( &hr_timer, ktime, HRTIMER_MODE_REL ); //TODO a supprimer pout test uniquement
             return result;
         } else if (pwm == -1 ) {
             goto fail_conf;
@@ -172,7 +199,7 @@ fail_conf:
 fail:
     return result;
 }
-static long send_pulse(unsigned long length)
+static long send_pulse(unsigned long length)// TODO delete after put in callback
 {
         if (length <= 0)
             return 0;
@@ -183,7 +210,7 @@ static long send_pulse(unsigned long length)
 }
 
 
-static void send_space(long length)
+static void send_space(long length) // TODO delete after put in callback
 {
         if (length <= 0)
                 return;
@@ -217,11 +244,11 @@ static void set_use_dec(void *data)
 static ssize_t lirc_write(struct file *file, const char *buf,
                           size_t n, loff_t *ppos)
 {
-        int i, count;
+      //  int i, count;
         unsigned long flags;
 
         long delta = 0;
-        int *wbuf;
+
 
         count = n / sizeof(int);
         if (n % sizeof(int) || count % 2 == 0)
@@ -229,19 +256,11 @@ static ssize_t lirc_write(struct file *file, const char *buf,
         wbuf = memdup_user(buf, n);
         if (IS_ERR(wbuf))
                 return PTR_ERR(wbuf);
-        spin_lock_irqsave(&lock, flags);
         dprintk("lirc_write called");
-        for (i = 0; i < count; i++) {
-                if (i%2)
-                        send_space(wbuf[i] - delta);
-                else
-                        delta = send_pulse(wbuf[i]);
-        }
-        pwm_disable(pwm_out);
-        spin_unlock_irqrestore(&lock, flags);
-    if (count>11) {
-        dprintk("lirc_write sent %d pulses: no10: %d, no11: %d\n",count,wbuf[10],wbuf[11]);
-    }
+
+ //   if (count>11) {
+ //       dprintk("lirc_write sent %d pulses: no10: %d, no11: %d\n",count,wbuf[10],wbuf[11]);
+  //  }
         kfree(wbuf);
         return n;
 }
@@ -464,12 +483,17 @@ exit_buffer_free:
 
 static void lirc_send_pwm_exit(void)
 {
-
-        pwm_disable(pwm_out);
-        pwm_free(pwm_out);
-        platform_device_unregister(lirc_send_pwm_dev);
-        platform_driver_unregister(&lirc_send_pwm_driver);
-        lirc_buffer_free(&rbuf);
+    //désactivation timer
+    int ret;
+    ret = hrtimer_cancel( &hr_timer );
+    if (ret) printk("The timer was still in use...\n");
+    printk("HR Timer module uninstalling\n");
+    //fin timer
+    pwm_disable(pwm_out);
+    pwm_free(pwm_out);
+    platform_device_unregister(lirc_send_pwm_dev);
+    platform_driver_unregister(&lirc_send_pwm_driver);
+    lirc_buffer_free(&rbuf);
 }
 
 /* end of stuff for THIS driver/device registration */
