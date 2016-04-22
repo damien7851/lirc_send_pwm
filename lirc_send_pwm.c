@@ -63,30 +63,20 @@ fmt, ## args);                          \
 } while (0)
 
 /* module parameters */
-
-
-
-static spinlock_t lock;
-
-/* set the default pwm num only 1 or 2 or A20 */
-static int pwm_num = 1;
-struct pwm_device *pwm_out;
 /* enable debugging messages */
-static int debug;
-
+static int debug = 0;
+/* set the default pwm num only 0 or 1 or A20 */
+static int pwm_num = 0;
 /* 1 = active state is hight, 0 = active state is low */
 static int active_state = 1;
+
+static spinlock_t lock;
+struct pwm_device *pwm_out;
 
 /* is the device open, so interrupt must be changed if pins are changed */
 static int device_open = 0;
 
-
-struct irq_chip *irqchip=NULL;
-struct irq_data *irqdata=NULL;
-
 /* forward declarations */
-static long send_pulse(unsigned long length);
-static void send_space(long length);
 static void lirc_send_pwm_exit(void);
 
 static struct platform_device *lirc_send_pwm_dev;
@@ -97,26 +87,26 @@ static unsigned int freq = 38000;
 static unsigned int duty_cycle = 50;
 static unsigned long period;
 static unsigned long pulse_width;
-static unsigned long space_width;
 static int *wbuf; //provient de lirc write puisque'on doit acceder depuis le callsback
 static int wbuflength;
 //TODO a complété
 static const int end = 200;
 static struct hrtimer hr_timer;
 static int state; //state of sending
-static long next_length;
-static int next_pwm; // 0 disable 1 enable
+
 /* stuff for TX pin */
 enum hrtimer_restart statemachine( struct hrtimer *timer )
 {
     ktime interval;
 
 
-    if (state == end || state == wbuflength+1)//TODO verifier la condition de fin
+    if (state == end || state == wbuflength)
     {
         pwm_disable(pwm_out);
-        return HRTIMER_NORESTART;
+        kfree(wbuf);
         printk (KERN_INFO LIRC_DRIVER_NAME":sending finished or truncated at 200");
+        return HRTIMER_NORESTART;
+
     } else{
         if (IS_ERR(wbuf))
         {
@@ -135,14 +125,6 @@ enum hrtimer_restart statemachine( struct hrtimer *timer )
         state ++;
         return HRTIMER_RESTART;
     }
-
-//for (i = 0; i < count; i++) {
-//                if (i%2)
-//                        send_space(wbuf[i] - delta);
-//                else
-//                        delta = send_pulse(wbuf[i]);
-//        }
-//        pwm_disable(pwm_out);
 }
 //fin TODO
 
@@ -184,7 +166,7 @@ static int setup_tx(unsigned int pwm)
 
             printk("HR Timer module installing\n");
 
-            ktime = ktime_set( 0, MS_TO_NS(delay_in_ms) );
+            ktime = ktime_set( 0, MS_TO_NS(delay_in_ms) ); //TODO to delete
 
             hrtimer_init( &hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
             hr_timer.function = &statemachine; //déclaration du callback timer
@@ -198,24 +180,6 @@ fail_conf:
     free_pwm(pwm_out);
 fail:
     return result;
-}
-static long send_pulse(unsigned long length)// TODO delete after put in callback
-{
-        if (length <= 0)
-            return 0;
-        pwm_enable(pwm_out);
-        safe_udelay(length);
-        return 0;
-        }
-}
-
-
-static void send_space(long length) // TODO delete after put in callback
-{
-        if (length <= 0)
-                return;
-        pwm_disable(pwm_out);
-        safe_udelay(length);
 }
 
 /* end of TX stuff */
@@ -244,24 +208,20 @@ static void set_use_dec(void *data)
 static ssize_t lirc_write(struct file *file, const char *buf,
                           size_t n, loff_t *ppos)
 {
-      //  int i, count;
-        unsigned long flags;
+        ktime_t ktime;
 
-        long delta = 0;
-
-
-        count = n / sizeof(int);
-        if (n % sizeof(int) || count % 2 == 0)
+        state = 0;
+        wbuflength = n / sizeof(int);
+        if (n % sizeof(int) || wbuflength % 2 == 0)
                 return -EINVAL;
         wbuf = memdup_user(buf, n);
         if (IS_ERR(wbuf))
                 return PTR_ERR(wbuf);
         dprintk("lirc_write called");
-
- //   if (count>11) {
- //       dprintk("lirc_write sent %d pulses: no10: %d, no11: %d\n",count,wbuf[10],wbuf[11]);
-  //  }
-        kfree(wbuf);
+        ktime = ktime_set( 0, MS_TO_US(wbuf[0]) );
+        hrtimer_start( &hr_timer, ktime, HRTIMER_MODE_REL );
+        pwm_enable(pwm_out);
+        state ++;
         return n;
 }
 
