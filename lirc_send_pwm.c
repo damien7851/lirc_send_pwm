@@ -26,13 +26,6 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
- a utiliser :
- int pwm_config(struct pwm_device *pwm, int duty_ns, int period_ns)
- struct pwm_device *pwm_request(int pwm_id, const char *label)
- int pwm_enable(struct pwm_device *pwm)
- void pwm_disable(struct pwm_device *pwm)
- void pwm_free(struct pwm_device *pwm)
- */
 
 #include <linux/module.h>
 #include <linux/errno.h>
@@ -141,38 +134,43 @@ static void safe_udelay(unsigned long usecs)
 static int init_timing_params(unsigned int new_duty_cycle,
                               unsigned int new_freq)
 {
-
-         int ret;
-         period = 1000000000L / freq;
-         pulse_width = period * duty_cycle / 100;
-         ret = pwm_config(pwm_out,period,pulse_width);
-         printk(KERN_INFO "pwm is configured at period %d us and duty cycle at %d %",period,duty_cycle);
-         return ret;
+    int ret;
+    period = 1000000000L / freq;
+    pulse_width = period * duty_cycle / 100;
+    ret = pwm_config(pwm_out,period,pulse_width);
+    if (ret) {
+        printk(KERN_ERR LIRC_DRIVER_NAME ":config pwm fail period or duty mismatch",pwm);
+    }
+    dprintk("pwm is configured with %d \% duty and %d Hz",new_duty_cycle,new_freq);
+    return ret;
 }
 
-static int setup_tx(unsigned int pwm){
+static int setup_tx(unsigned int pwm)
+{
     int result;
-    result =0;
-    if (pwm == 0 || pwm ==1){
-    pwm_out = pwm_request(pwm, "Ir-pwm-out");
-        if (!pwm_out){
-            printk(KERN_ERR LIRC_DRIVER_NAME "pwm %d is busy",pwm);
-            goto fail;
-        }
-        period = 1000000000L / freq;
-        pulse_width = period * duty_cycle / 100;
-        result = pwm_config(pwm_out,period,pulse_width);
-        printk(KERN_INFO "pwm %d is configured at period %d us and duty cycle at %d %",pwm,period,duty_cycle);
-        return result;
-    }else if (pwm == -1 ){
-        goto fail_conf;
-    }
-    //pwm_polarity(pwm_out,active_state);
 
-    fail_conf:
-        pwm_free(pwm_out);
-    fail:
-        return -1;
+        if (pwm == 0 || pwm ==1) {
+            if (pwm_out==NULL){
+                pwm_out = pwm_request(pwm, "Ir-pwm-out");
+                }else{
+                pwm_free(pwm_out);
+                pwm_out = pwm_request(pwm, "Ir-pwm-out");
+                }
+
+            if (IS_ERR(pwm_out)) {
+                printk(KERN_ERR LIRC_DRIVER_NAME "pwm request fail returned %d",PTR_ERR(pwm_out));
+                goto fail;
+            }
+            result = init_timing_params(duty_cycle,freq);
+            return result;
+        } else if (pwm == -1 ) {
+            goto fail_conf;
+        }
+
+fail_conf:
+    free_pwm(pwm_out);
+fail:
+    return result;
 }
 static long send_pulse(unsigned long length)
 {
@@ -202,14 +200,12 @@ static void send_space(long length)
    timing params initialized and interrupts activated */
 static int set_use_inc(void *data)
 {
-
-
-        init_timing_params(duty_cycle, freq);
-        /* initialize pulse/space widths */
-        //TODO add initalisation hrtimer
-        dprintk("dev open")
-        device_open++; //utile?
-        return 0;
+    int ret;
+    ret = init_timing_params(duty_cycle, freq);
+    //TODO add initalisation hrtimer
+    dprintk("dev open")
+    device_open++; //utile?
+    return ret;
 }
 
 /* called when character device is closed */
@@ -348,8 +344,6 @@ static struct platform_driver lirc_send_pwm_driver = {
 
 static DEFINE_MUTEX(sysfs_lock);
 
-
-/* TODO a mettre à jour pour pwm */
 static ssize_t lirc_pwm_show(struct class *class, struct class_attribute *attr, char *buf)
 {
     ssize_t status;
@@ -365,7 +359,7 @@ static ssize_t lirc_pwm_store(struct class *class, struct class_attribute *attr,
     ssize_t status;
     mutex_lock(&sysfs_lock);
     sscanf(buf,"%d",&new_pwm);
-    status = setup_tx(new_pwm) ? : size;
+    status = setup_tx(new_pwm) ? -EINVAL : size;
     mutex_unlock(&sysfs_lock);
     return status;
 }
