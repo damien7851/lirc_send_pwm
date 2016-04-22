@@ -36,3 +36,5 @@
 modules.order
 .tmp_versions
 *.layout
+Module.symvers
+*.mod.c

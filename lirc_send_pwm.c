@@ -81,7 +81,7 @@ fmt, ## args);                          \
 static spinlock_t lock;
 
 /* set the default pwm num only 1 or 2 or A20 */
-static int pwm_num = 1;
+static int pwm_num = 0;
 struct pwm_device *pwm_out;
 /* enable debugging messages */
 static int debug;
@@ -109,7 +109,7 @@ static unsigned int freq = 38000;
 static unsigned int duty_cycle = 50;
 static unsigned long period;
 static unsigned long pulse_width;
-static unsigned long space_width;
+
 
 
 //static const int end = 200;
@@ -132,7 +132,7 @@ static unsigned long space_width;
 //}
 static void safe_udelay(unsigned long usecs)
 {
-    if usecs>2000 {
+    if (usecs>2000) {
         udelay(2000); //simple protection
     } else
     udelay(usecs);
@@ -146,12 +146,13 @@ static int init_timing_params(unsigned int new_duty_cycle,
          period = 1000000000L / freq;
          pulse_width = period * duty_cycle / 100;
          ret = pwm_config(pwm_out,period,pulse_width);
-
+         printk(KERN_INFO "pwm is configured at period %d us and duty cycle at %d %",period,duty_cycle);
          return ret;
 }
 
-static ssize_t setup_tx(unsigned int pwm){
+static int setup_tx(unsigned int pwm){
     int result;
+    result =0;
     if (pwm == 0 || pwm ==1){
     pwm_out = pwm_request(pwm, "Ir-pwm-out");
         if (!pwm_out){
@@ -161,6 +162,7 @@ static ssize_t setup_tx(unsigned int pwm){
         period = 1000000000L / freq;
         pulse_width = period * duty_cycle / 100;
         result = pwm_config(pwm_out,period,pulse_width);
+        printk(KERN_INFO "pwm %d is configured at period %d us and duty cycle at %d %",pwm,period,duty_cycle);
         return result;
     }else if (pwm == -1 ){
         goto fail_conf;
@@ -168,18 +170,19 @@ static ssize_t setup_tx(unsigned int pwm){
     //pwm_polarity(pwm_out,active_state);
 
     fail_conf:
-        free_pwm(pwm_out);,
+        pwm_free(pwm_out);
     fail:
-        return result;
+        return -1;
 }
 static long send_pulse(unsigned long length)
 {
         if (length <= 0)
             return 0;
         pwm_enable(pwm_out);
+        dprintk("pwm enable");
         safe_udelay(length);
         return 0;
-        }
+
 }
 
 
@@ -188,6 +191,7 @@ static void send_space(long length)
         if (length <= 0)
                 return;
         pwm_disable(pwm_out);
+        dprintk("pwm disable");
         safe_udelay(length);
 }
 
@@ -198,11 +202,12 @@ static void send_space(long length)
    timing params initialized and interrupts activated */
 static int set_use_inc(void *data)
 {
-        int result;
-        unsigned long flags;
+
+
         init_timing_params(duty_cycle, freq);
         /* initialize pulse/space widths */
         //TODO add initalisation hrtimer
+        dprintk("dev open")
         device_open++; //utile?
         return 0;
 }
@@ -211,6 +216,7 @@ static int set_use_inc(void *data)
 static void set_use_dec(void *data)
 {
     pwm_disable(pwm_out);
+    dprintk("dev close")
     device_open--; //utile ?
     //TODO add free hrtimer
 }
@@ -397,7 +403,7 @@ static ssize_t lirc_active_state_store(struct class *class, struct class_attribu
 
 static struct class_attribute lirc_send_pwm_attrs[] = {
     __ATTR(pwm_num, 0644, lirc_pwm_show, lirc_pwm_store),
-    __ATTR(lirc_active_state, 0644, lirc_active_state_show, lirc_active_state_store),
+    __ATTR(active_state, 0644, lirc_active_state_show, lirc_active_state_store),
     __ATTR_NULL,
 };
 static struct class lirc_send_pwm_class = { //TODOI renomage
@@ -413,7 +419,7 @@ static struct class lirc_send_pwm_class = { //TODOI renomage
 static int __init lirc_send_pwm_init(void)
 {
         int result;
-        int active_periode;
+
 
         /* Init read buffer. */
         result = lirc_buffer_init(&rbuf, sizeof(int), RBUF_LEN);
@@ -483,7 +489,7 @@ static void lirc_send_pwm_exit(void)
 
 static int __init lirc_send_pwm_init_module(void)
 {
-    int result,temp_in_pin,temp_out_pin;
+    int result;
 
         result = lirc_send_pwm_init();
         if (result)
