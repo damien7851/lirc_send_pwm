@@ -24,8 +24,7 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-
+ * */
 
 #include <linux/module.h>
 #include <linux/errno.h>
@@ -98,10 +97,10 @@ static struct platform_device *lirc_send_pwm_dev;
 static struct lirc_buffer rbuf;
 
 /* initialized/set in init_timing_params() */
-static unsigned int freq = 38000;
-static unsigned int duty_cycle = 50;
-static unsigned long period;
-static unsigned long pulse_width;
+static int freq = 38000;
+static int duty_cycle = 50;
+static int period;
+static int pulse_width;
 
 
 
@@ -131,23 +130,25 @@ static void safe_udelay(unsigned long usecs)
     udelay(usecs);
 }
 
-static int init_timing_params(unsigned int new_duty_cycle,
-                              unsigned int new_freq)
+static int init_timing_params(int new_duty_cycle,
+                              int new_freq)
 {
     int ret;
     period = 1000000000L / freq;
-    pulse_width = period * duty_cycle / 100;
-    ret = pwm_config(pwm_out,period,pulse_width);
+    pulse_width = period / 100 * new_duty_cycle ;
+    dprintk("pwm pointeur address %p",&pwm_out);
+    dprintk("pwm address %p",pwm_out);
+    ret = pwm_config(pwm_out,pulse_width,period);
     if (ret) {
-        printk(KERN_ERR LIRC_DRIVER_NAME ":config pwm fail period or duty mismatch",pwm);
+        printk(KERN_ERR LIRC_DRIVER_NAME ":config pwm fail period or duty mismatch");
     }
-    dprintk("pwm is configured with %d \% duty and %d Hz",new_duty_cycle,new_freq);
+    dprintk(" pwm is configured with %d duty and %d Hz period: %d pulse: %d ns",new_duty_cycle,new_freq,period,pulse_width);
     return ret;
 }
 
 static int setup_tx(unsigned int pwm)
 {
-    int result;
+    int result = 0;
 
         if (pwm == 0 || pwm ==1) {
             if (pwm_out==NULL){
@@ -158,7 +159,7 @@ static int setup_tx(unsigned int pwm)
                 }
 
             if (IS_ERR(pwm_out)) {
-                printk(KERN_ERR LIRC_DRIVER_NAME "pwm request fail returned %d",PTR_ERR(pwm_out));
+                printk(KERN_ERR LIRC_DRIVER_NAME "pwm request fail returned %ld",PTR_ERR(pwm_out));
                 goto fail;
             }
             result = init_timing_params(duty_cycle,freq);
@@ -168,7 +169,7 @@ static int setup_tx(unsigned int pwm)
         }
 
 fail_conf:
-    free_pwm(pwm_out);
+    pwm_free(pwm_out);
 fail:
     return result;
 }
@@ -203,7 +204,7 @@ static int set_use_inc(void *data)
     int ret;
     ret = init_timing_params(duty_cycle, freq);
     //TODO add initalisation hrtimer
-    dprintk("dev open")
+    dprintk("dev open");
     device_open++; //utile?
     return ret;
 }
@@ -212,7 +213,7 @@ static int set_use_inc(void *data)
 static void set_use_dec(void *data)
 {
     pwm_disable(pwm_out);
-    dprintk("dev close")
+    dprintk("dev close");
     device_open--; //utile ?
     //TODO add free hrtimer
 }
@@ -440,7 +441,7 @@ static int __init lirc_send_pwm_init(void)
 
         result = setup_tx(pwm_num);
         if (result){
-            printk(KERN_ERR LIRC_DRIVER_NAME "setup failed returned %d\n",result);
+            printk(KERN_ERR LIRC_DRIVER_NAME ": setup failed returned %d\n",result);
             goto pwm_free_exit;
 
         }
@@ -451,7 +452,7 @@ static int __init lirc_send_pwm_init(void)
 pwm_free_exit:
         setup_tx(-1);
 
-exit_device_add:
+
         platform_device_unregister(lirc_send_pwm_dev); /*TODO : verify this line */
 
 exit_device_put:
