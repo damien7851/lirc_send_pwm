@@ -1,18 +1,18 @@
-
 sudo: false
 language: c
-cache: ccache
-	directories:
-	- $HOME/linux-sunxi
+cache: 
+  directories:
+  - $HOME/linux-sunxi
+  - $HOME/.ccache
 git:
   depth: 1
 addons:
   apt:
     packages:
-	- gcc-arm-linux-gnueabihf
-	- bc
-	- u-boot-tools
-	- lzop
+    - gcc-arm-linux-gnueabihf
+    - bc
+    - u-boot-tools
+    - lzop
 before_install:
   # Install the arm32 cross-compiler
   - git clone --depth=1 --branch=pwm\+cma https://github.com/damien7851/linux-sunxi.git damien7851/linux-sunxi
@@ -33,7 +33,3 @@ script:
 
   - export PATH=/usr/lib/ccache:$PATH
   - make -j`getconf _NPROCESSORS_ONLN` 
-
-
-
-
