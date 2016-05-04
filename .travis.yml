@@ -35,11 +35,13 @@ before_script:
 script:
 
   - export PATH=/usr/lib/ccache:$PATH
+  - export ARCH=arm
+  - export CROSS_COMPILE=arm-linux-gnueabihf-
   - cd ..
   - git clone --depth=1 --branch=pwm\+cma https://github.com/damien7851/linux-sunxi.git linux-sunxi
   - cd linux-sunxi
   - make cubietruck_defconfig
-  - make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j`getconf _NPROCESSORS_ONLN` uImage modules
+  - make -j`getconf _NPROCESSORS_ONLN` uImage modules
   - ls
   - cd $MYHOME
   - make -j`getconf _NPROCESSORS_ONLN` 
