@@ -2,17 +2,17 @@
 sudo: false
 language: c
 cache: ccache
-	directories:
-	- $HOME/linux-sunxi
+   directories:
+   - $HOME/linux-sunxi
 git:
   depth: 1
 addons:
   apt:
     packages:
-	- gcc-arm-linux-gnueabihf
-	- bc
-	- u-boot-tools
-	- lzop
+    - gcc-arm-linux-gnueabihf
+    - bc
+    - u-boot-tools
+    - lzop
 before_install:
   # Install the arm32 cross-compiler
   - git clone --depth=1 --branch=pwm\+cma https://github.com/damien7851/linux-sunxi.git damien7851/linux-sunxi
