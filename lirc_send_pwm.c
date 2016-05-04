@@ -146,10 +146,7 @@ static int init_timing_params(int new_duty_cycle,
     return ret;
 }
 
-static int setup_tx(unsigned int pwm)
-{
 
-}
 static long send_pulse(unsigned long length)
 {
     if (length <= 0)
@@ -331,7 +328,7 @@ static ssize_t lirc_pwm_store(struct class *class, struct class_attribute *attr,
     ssize_t status;
     mutex_lock(&sysfs_lock);
     sscanf(buf,"%d",&new_pwm);
-    status = setup_tx(new_pwm) ? -EINVAL : size;
+    status = -ENOSYS;
     mutex_unlock(&sysfs_lock);
     return status;
 }
@@ -393,18 +390,13 @@ static int lirc_send_pwm_remove(struct platform_device *pdev)
 static int lirc_send_pwm_probe(struct platform_device *pdev)
 {
     int result;
-    if (pwm == 0 || pwm ==1)
+    lirc_send_pwm_dev = pdev; //TODO voir ce binz
+    if (pwm_num == 0 || pwm_num ==1)
     {
-        pwm_out = pwm_request(pwm, "Ir-pwm-out"); //this function is deprecated use pwm_get() instead but depandencie of pwm_get is not present
+        pwm_out = pwm_request(pwm_num, "Ir-pwm-out"); //this function is deprecated use pwm_get() instead but depandencie of pwm_get is not present
 /* test if request is correct */
-        if (PTR_ERR(pwm_out) == -EPROBE_DEFER) {
-            driver_deferred_probe_add(dev);
-            goto exit_lirc;
-        } else if (PTR_ERR(pwm_out))  {
-            printk(KERN_ERR LIRC_DRIVER_NAME "pwm request fail returned %ld",PTR_ERR(pwm_out));
-            result = PTR_ERR(pwm_out);
-            goto exit_lirc;
-        }
+        if (IS_ERR(pwm_out)) {
+            return PTR_ERR(pwm_out);
 
         result = init_timing_params(duty_cycle,freq);
 
