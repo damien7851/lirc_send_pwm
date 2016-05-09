@@ -386,6 +386,7 @@ static int lirc_send_pwm_remove(struct platform_device *pdev)
     pwm_disable(pwm_out);
     pwm_free(pwm_out);
     printk(KERN_INFO LIRC_DRIVER_NAME ": cleaned up module\n");
+    return 0;
 }
 static int lirc_send_pwm_probe(struct platform_device *pdev)
 {
@@ -395,13 +396,13 @@ static int lirc_send_pwm_probe(struct platform_device *pdev)
     {
         pwm_out = pwm_request(pwm_num, "Ir-pwm-out"); //this function is deprecated use pwm_get() instead but depandencie of pwm_get is not present
 /* test if request is correct */
-        if (IS_ERR(pwm_out)) {
+        if (IS_ERR(pwm_out))
             return PTR_ERR(pwm_out);
 
         result = init_timing_params(duty_cycle,freq);
 
         if (result) {
-            printk(KERN_ERR LIRC_DRIVER_NAME "pwm param fail returned %ld",result);
+            printk(KERN_ERR LIRC_DRIVER_NAME "pwm param fail returned %d",result);
             goto exit_lirc;
         }
     } else {
