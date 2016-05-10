@@ -26,6 +26,7 @@
  *  along with this program; if not, write to the Free Software
  * */
 
+
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
@@ -51,13 +52,8 @@
 #define RBUF_LEN 256
 #define LIRC_TRANSMITTER_LATENCY 256
 
-#ifndef MAX_UDELAY_MS
-#define MAX_UDELAY_US 5000
-#else
-#define MAX_UDELAY_US (MAX_UDELAY_MS*1000)
-#endif
-
-
+#define MS_TO_NS(x)	(x * 1E6L)
+#define US_TO_NS(x)	(x * 1E3L)
 
 #define dprintk(fmt, args...)           \
 do {                                    \
@@ -67,72 +63,70 @@ fmt, ## args);                          \
 } while (0)
 
 /* module parameters */
-
-
-
-static spinlock_t lock;
-
-/* set the default pwm num only 1 or 2 or A20 */
-static int pwm_num = 0;
-struct pwm_device *pwm_out;
 /* enable debugging messages */
-static int debug;
-
+static int debug = 0;
+/* set the default pwm num only 0 or 1 or A20 */
+static int pwm_num = 0;
 /* 1 = active state is hight, 0 = active state is low */
 static int active_state = 1;
+
+static spinlock_t lock;
+struct pwm_device *pwm_out;
 
 /* is the device open, so interrupt must be changed if pins are changed */
 static int device_open = 0;
 
-
-struct irq_chip *irqchip=NULL;
-struct irq_data *irqdata=NULL;
-
 /* forward declarations */
-static long send_pulse(unsigned long length);
-static void send_space(long length);
 static void lirc_send_pwm_exit(void);
 
 static struct platform_device *lirc_send_pwm_dev;
 static struct lirc_buffer rbuf;
 
 /* initialized/set in init_timing_params() */
-static int freq = 38000;
-static int duty_cycle = 50;
-static int period;
-static int pulse_width;
+
+static unsigned int freq = 38000;
+static unsigned int duty_cycle = 50;
+static unsigned long period;
+static unsigned long pulse_width;
+static int *wbuf; //provient de lirc write puisque'on doit acceder depuis le callsback
+static int wbuflength;
+//TODO a complété
+static const int end = 200;
+static struct hrtimer hr_timer;
+static int state; //state of sending
+
+/* stuff for TX pin */
+enum hrtimer_restart statemachine( struct hrtimer *timer ){
+    ktime interval;
 
 
+    if (state == end || state == wbuflength) {
+        pwm_disable(pwm_out);
+        kfree(wbuf);
+        printk (KERN_INFO LIRC_DRIVER_NAME":sending finished or truncated at 200");
+        return HRTIMER_NORESTART;
 
-//static const int end = 200;
-//static struct hrtimer hr_timer;
-//static int state; //state of sending
-//static long next_length;
-//static int next_pwm; // 0 disable 1 enable
-///* stuff for TX pin */
-//enum hrtimer_restart statemachine( struct hrtimer *timer )
-//{
-//
-//
-//
-//        if state == end {
-//            return HRTIMER_NORESTART;
-//        }else
-//            return HRTIMER_RESTART
-//
-//
-//}
-static void safe_udelay(unsigned long usecs)
-{
-    if (usecs>2000) {
-        udelay(2000); //simple protection
-    } else
-        udelay(usecs);
+    } else {
+        if (IS_ERR(wbuf)) {
+            printk (KERN_ERROR LIRC_DRIVER_NAME":sending called before buffer initialized");
+            return HRTIMER_NORESTART;
+        }
+        if (state%2) { //si impaire
+            pwm_disable(pwm_out);
+        } else
+            pwm_enable(pwm_out);
+
+
+        interval = ktime_set(0,US_TO_NS(wbuf[state]));
+        hrtimer_forward_now(&hr_timer,interval);
+        state ++;
+        return HRTIMER_RESTART;
+    }
 }
+//fin TODO
 
 static int init_timing_params(int new_duty_cycle,
-                              int new_freq)
-{
+                              int new_freq){
     int ret;
     period = 1000000000L / freq;
     pulse_width = period / 100 * new_duty_cycle ;
@@ -146,35 +140,9 @@ static int init_timing_params(int new_duty_cycle,
     return ret;
 }
 
-
-static long send_pulse(unsigned long length)
-{
-    if (length <= 0)
-        return 0;
-    pwm_enable(pwm_out);
-    dprintk("pwm enable");
-    safe_udelay(length);
-    return 0;
-
-}
-
-
-static void send_space(long length)
-{
-    if (length <= 0)
-        return;
-    pwm_disable(pwm_out);
-    dprintk("pwm disable");
-    safe_udelay(length);
-}
-
-/* end of TX stuff */
-
-
 /* called when the character device is opened
    timing params initialized and interrupts activated */
-static int set_use_inc(void *data)
-{
+static int set_use_inc(void *data){
     int ret;
     ret = init_timing_params(duty_cycle, freq);
     //TODO add initalisation hrtimer
@@ -184,8 +152,7 @@ static int set_use_inc(void *data)
 }
 
 /* called when character device is closed */
-static void set_use_dec(void *data)
-{
+static void set_use_dec(void *data){
     pwm_disable(pwm_out);
     dprintk("dev close");
     device_open--; //utile ?
@@ -194,40 +161,26 @@ static void set_use_dec(void *data)
 
 /* lirc to tx */
 static ssize_t lirc_write(struct file *file, const char *buf,
-                          size_t n, loff_t *ppos)
-{
-    int i, count;
-    unsigned long flags;
+                          size_t n, loff_t *ppos){
+    ktime_t ktime;
 
-    long delta = 0;
-    int *wbuf;
-
-    count = n / sizeof(int);
-    if (n % sizeof(int) || count % 2 == 0)
+    state = 0;
+    wbuflength = n / sizeof(int);
+    if (n % sizeof(int) || wbuflength % 2 == 0)
         return -EINVAL;
     wbuf = memdup_user(buf, n);
     if (IS_ERR(wbuf))
         return PTR_ERR(wbuf);
-    spin_lock_irqsave(&lock, flags);
     dprintk("lirc_write called");
-    for (i = 0; i < count; i++) {
-        if (i%2)
-            send_space(wbuf[i] - delta);
-        else
-            delta = send_pulse(wbuf[i]);
-    }
-    pwm_disable(pwm_out);
-    spin_unlock_irqrestore(&lock, flags);
-    if (count>11) {
-        dprintk("lirc_write sent %d pulses: no10: %d, no11: %d\n",count,wbuf[10],wbuf[11]);
-    }
-    kfree(wbuf);
+    ktime = ktime_set( 0, MS_TO_US(wbuf[0]) );
+    hrtimer_start( &hr_timer, ktime, HRTIMER_MODE_REL );
+    pwm_enable(pwm_out);
+    state ++;
     return n;
 }
 
 /* interpret lirc commands */
-static long lirc_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
-{
+static long lirc_ioctl(struct file *filep, unsigned int cmd, unsigned long arg){
     int result;
     __u32 value;
 
@@ -303,18 +256,9 @@ static struct lirc_driver driver = {
     .owner                = THIS_MODULE,
 };
 
-/* end of lirc device/driver stuff */
-
-
-
-
-
-/* stuff for sysfs*/
-
 static DEFINE_MUTEX(sysfs_lock);
 
-static ssize_t lirc_pwm_show(struct class *class, struct class_attribute *attr, char *buf)
-{
+static ssize_t lirc_pwm_show(struct class *class, struct class_attribute *attr, char *buf){
     ssize_t status;
     mutex_lock(&sysfs_lock);
     status = sprintf(buf,"%d\n",pwm_num);
@@ -322,8 +266,7 @@ static ssize_t lirc_pwm_show(struct class *class, struct class_attribute *attr, 
     return status;
 }
 
-static ssize_t lirc_pwm_store(struct class *class, struct class_attribute *attr, const char* buf, size_t size)
-{
+static ssize_t lirc_pwm_store(struct class *class, struct class_attribute *attr, const char* buf, size_t size){
     int new_pwm;
     ssize_t status;
     mutex_lock(&sysfs_lock);
@@ -332,12 +275,8 @@ static ssize_t lirc_pwm_store(struct class *class, struct class_attribute *attr,
     mutex_unlock(&sysfs_lock);
     return status;
 }
-/*fin mise à jour */
 
-
-
-static ssize_t lirc_active_state_show(struct class *class, struct class_attribute *attr, char *buf)
-{
+static ssize_t lirc_active_state_show(struct class *class, struct class_attribute *attr, char *buf){
     ssize_t status;
     mutex_lock(&sysfs_lock);
     status = sprintf(buf,"%d\n",active_state);
@@ -345,8 +284,7 @@ static ssize_t lirc_active_state_show(struct class *class, struct class_attribut
     return status;
 }
 
-static ssize_t lirc_active_state_store(struct class *class, struct class_attribute *attr, const char* buf, size_t size)
-{
+static ssize_t lirc_active_state_store(struct class *class, struct class_attribute *attr, const char* buf, size_t size){
     int try_value;
     ssize_t status=size;
     mutex_lock(&sysfs_lock);
@@ -358,7 +296,6 @@ static ssize_t lirc_active_state_store(struct class *class, struct class_attribu
     mutex_unlock(&sysfs_lock);
     return status;
 }
-
 
 /* I don't think we need another device, so just put it in the class directory
  * All we need is a way to access some global parameters of this module */
@@ -374,32 +311,41 @@ static struct class lirc_send_pwm_class = { //TODO renomage
         .class_attrs = lirc_send_pwm_attrs,
     };
 
-
-/* now comes THIS driver, above is lirc */
-
 /* initialize / free THIS driver and device and a lircconvert_string_to_microseconds buffer*/
-static int lirc_send_pwm_remove(struct platform_device *pdev)
-{
+static int lirc_send_pwm_remove(struct platform_device *pdev){
+    int ret = 0;
     lirc_buffer_free(&rbuf);
     class_unregister(&lirc_send_pwm_class);
     lirc_unregister_driver(driver.minor);
     pwm_disable(pwm_out);
     pwm_free(pwm_out);
     printk(KERN_INFO LIRC_DRIVER_NAME ": cleaned up module\n");
-    return 0;
+    ret = hrtimer_cancel( &hr_timer );
+    if (ret) printk("The timer was still in use...\n");
+    printk("HR Timer module uninstalling\n");
+    return ret;
 }
-static int lirc_send_pwm_probe(struct platform_device *pdev)
-{
+static int lirc_send_pwm_probe(struct platform_device *pdev){
     int result;
+    ktime_t ktime;
+    state = end; // on initaulise la machine d'état sur arret.
+    unsigned long delay_in_ms = 200L; // on met un délais initial
+
     lirc_send_pwm_dev = pdev; //TODO voir ce binz
-    if (pwm_num == 0 || pwm_num ==1)
-    {
+    if (pwm_num == 0 || pwm_num ==1) {
         pwm_out = pwm_request(pwm_num, "Ir-pwm-out"); //this function is deprecated use pwm_get() instead but depandencie of pwm_get is not present
-/* test if request is correct */
+        /* test if request is correct */
         if (IS_ERR(pwm_out))
             return PTR_ERR(pwm_out);
 
         result = init_timing_params(duty_cycle,freq);
+
+        printk("HR Timer module installing\n");
+        ktime = ktime_set( 0, MS_TO_NS(delay_in_ms) ); //TODO to delete
+
+        hrtimer_init( &hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
+        hr_timer.function = &statemachine; //déclaration du callback timer
+        hrtimer_start( &hr_timer, ktime, HRTIMER_MODE_REL ); //TODO a supprimer pout test uniquement
 
         if (result) {
             printk(KERN_ERR LIRC_DRIVER_NAME "pwm param fail returned %d",result);
@@ -449,7 +395,7 @@ static int lirc_send_pwm_probe(struct platform_device *pdev)
         goto exit_class;
 
 
-        return result;
+    return result;
 
 exit_class:
     class_unregister(&lirc_send_pwm_class);
@@ -467,8 +413,7 @@ static struct platform_driver lirc_send_pwm_driver = {
     .probe = lirc_send_pwm_probe,
     .remove = lirc_send_pwm_remove,
 };
-static int __init lirc_send_pwm_init(void)
-{
+static int __init lirc_send_pwm_init(void){
     int result;
 
     result = platform_driver_register(&lirc_send_pwm_driver);
@@ -499,8 +444,7 @@ exit_driver_unregister:
     return result;
 }
 
-static void __exit lirc_send_pwm_exit(void)
-{
+static void __exit lirc_send_pwm_exit(void){
     platform_device_unregister(lirc_send_pwm_dev);
     platform_driver_unregister(&lirc_send_pwm_driver);
 }
