@@ -51,7 +51,6 @@
 
 #define RBUF_LEN 256
 #define LIRC_TRANSMITTER_LATENCY 256
-
 #define MS_TO_NS(x)	(x * 1E6L)
 #define US_TO_NS(x)	(x * 1E3L)
 
@@ -70,7 +69,7 @@ static int pwm_num = 0;
 /* 1 = active state is hight, 0 = active state is low */
 static int active_state = 1;
 
-static spinlock_t lock;
+
 struct pwm_device *pwm_out;
 
 /* is the device open, so interrupt must be changed if pins are changed */
@@ -97,7 +96,7 @@ static int state; //state of sending
 
 /* stuff for TX pin */
 enum hrtimer_restart statemachine( struct hrtimer *timer ){
-    ktime interval;
+    ktime_t interval;
 
 
     if (state == end || state == wbuflength) {
@@ -108,7 +107,7 @@ enum hrtimer_restart statemachine( struct hrtimer *timer ){
 
     } else {
         if (IS_ERR(wbuf)) {
-            printk (KERN_ERROR LIRC_DRIVER_NAME":sending called before buffer initialized");
+            printk (KERN_ERR LIRC_DRIVER_NAME":sending called before buffer initialized");
             return HRTIMER_NORESTART;
         }
         if (state%2) { //si impaire
@@ -136,7 +135,7 @@ static int init_timing_params(int new_duty_cycle,
     if (ret) {
         printk(KERN_ERR LIRC_DRIVER_NAME ":config pwm fail period or duty mismatch");
     }
-    dprintk(" pwm is configured with %d duty and %d Hz period: %d pulse: %d ns",new_duty_cycle,new_freq,period,pulse_width);
+    dprintk(" pwm is configured with %d duty and %d Hz period: %ul pulse: %ul ns",new_duty_cycle,new_freq,period,pulse_width);
     return ret;
 }
 
@@ -172,7 +171,7 @@ static ssize_t lirc_write(struct file *file, const char *buf,
     if (IS_ERR(wbuf))
         return PTR_ERR(wbuf);
     dprintk("lirc_write called");
-    ktime = ktime_set( 0, MS_TO_US(wbuf[0]) );
+    ktime = ktime_set( 0, US_TO_NS(wbuf[0]) );
     hrtimer_start( &hr_timer, ktime, HRTIMER_MODE_REL );
     pwm_enable(pwm_out);
     state ++;
@@ -328,9 +327,9 @@ static int lirc_send_pwm_remove(struct platform_device *pdev){
 static int lirc_send_pwm_probe(struct platform_device *pdev){
     int result;
     ktime_t ktime;
-    state = end; // on initaulise la machine d'état sur arret.
     unsigned long delay_in_ms = 200L; // on met un délais initial
 
+    state = end; // on initaulise la machine d'état sur arret.
     lirc_send_pwm_dev = pdev; //TODO voir ce binz
     if (pwm_num == 0 || pwm_num ==1) {
         pwm_out = pwm_request(pwm_num, "Ir-pwm-out"); //this function is deprecated use pwm_get() instead but depandencie of pwm_get is not present
