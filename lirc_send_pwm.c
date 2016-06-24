@@ -97,7 +97,7 @@ static int state; //state of sending
 /* stuff for TX pin */
 enum hrtimer_restart statemachine( struct hrtimer *timer )
 {
-    ktime interval;
+   
 
 
     if (state == end || state == wbuflength)
@@ -110,7 +110,7 @@ enum hrtimer_restart statemachine( struct hrtimer *timer )
     } else{
         if (IS_ERR(wbuf))
         {
-            printk (KERN_ERROR LIRC_DRIVER_NAME":sending called before buffer initialized");
+            printk (KERN_ERR LIRC_DRIVER_NAME":sending called before buffer initialized");
             return HRTIMER_NORESTART;
         }
         if (state%2)  //si impaire
@@ -120,8 +120,8 @@ enum hrtimer_restart statemachine( struct hrtimer *timer )
             pwm_enable(pwm_out);
 
 
-        interval = ktime_set(0,US_TO_NS(wbuf[state]));
-        hrtimer_forward_now(&hr_timer,interval);
+    
+        hrtimer_forward_now(&hr_timer,ns_to_ktime(US_TO_NS(wbuf[state])));
         state ++;
         return HRTIMER_RESTART;
     }
@@ -136,7 +136,7 @@ static int init_timing_params(unsigned int new_duty_cycle,
     pulse_width = period * duty_cycle / 100;
     ret = pwm_config(pwm_out,period,pulse_width);
     if (ret) {
-        printk(KERN_ERR LIRC_DRIVER_NAME ":config pwm fail period or duty mismatch",pwm);
+        printk(KERN_ERR LIRC_DRIVER_NAME ":config pwm fail period or duty mismatch");
     }
     dprintk("pwm is configured with %d \% duty and %d Hz",new_duty_cycle,new_freq);
     return ret;
@@ -208,8 +208,6 @@ static void set_use_dec(void *data)
 static ssize_t lirc_write(struct file *file, const char *buf,
                           size_t n, loff_t *ppos)
 {
-        ktime_t ktime;
-
         state = 0;
         wbuflength = n / sizeof(int);
         if (n % sizeof(int) || wbuflength % 2 == 0)
@@ -218,8 +216,8 @@ static ssize_t lirc_write(struct file *file, const char *buf,
         if (IS_ERR(wbuf))
                 return PTR_ERR(wbuf);
         dprintk("lirc_write called");
-        ktime = ktime_set( 0, MS_TO_US(wbuf[0]) );
-        hrtimer_start( &hr_timer, ktime, HRTIMER_MODE_REL );
+       
+        hrtimer_start( &hr_timer, ns_to_ktime(US_TO_NS(wbuf[0])), HRTIMER_MODE_REL );
         pwm_enable(pwm_out);
         state ++;
         return n;
