@@ -70,7 +70,7 @@ static int pwm_num = 0;
 /* 1 = active state is hight, 0 = active state is low */
 static int active_state = 1;
 
-static spinlock_t lock;
+//static spinlock_t lock; //il en faudrait peut etre un?
 struct pwm_device *pwm_out;
 
 /* is the device open, so interrupt must be changed if pins are changed */
@@ -138,14 +138,14 @@ static int init_timing_params(unsigned int new_duty_cycle,
     if (ret) {
         printk(KERN_ERR LIRC_DRIVER_NAME ":config pwm fail period or duty mismatch");
     }
-    dprintk("pwm is configured with %d \% duty and %d Hz",new_duty_cycle,new_freq);
+    dprintk("pwm is configured with %u \% duty and %u Hz",new_duty_cycle,new_freq);
     return ret;
 }
 
 static int setup_tx(unsigned int pwm)
 {
     int result;
-    ktime_t ktime;
+   
     state = end; // on initaulise la machine d'état sur arret.
         if (pwm == 0 || pwm ==1) {
             if (pwm_out==NULL){
@@ -156,28 +156,24 @@ static int setup_tx(unsigned int pwm)
                 }
 
             if (IS_ERR(pwm_out)) {
-                printk(KERN_ERR LIRC_DRIVER_NAME "pwm request fail returned %d",PTR_ERR(pwm_out));
+                printk(KERN_ERR LIRC_DRIVER_NAME "pwm request fail returned %ld",PTR_ERR(pwm_out));
                 goto fail;
             }
             result = init_timing_params(duty_cycle,freq);
             //initialisation timer
 
-            unsigned long delay_in_ms = 200L; // on met un délais initial
-
             printk("HR Timer module installing\n");
-
-            ktime = ktime_set( 0, MS_TO_NS(delay_in_ms) ); //TODO to delete
 
             hrtimer_init( &hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
             hr_timer.function = &statemachine; //déclaration du callback timer
-            hrtimer_start( &hr_timer, ktime, HRTIMER_MODE_REL ); //TODO a supprimer pout test uniquement
+            hrtimer_start( &hr_timer,  ms_to_ktime(200L), HRTIMER_MODE_REL ); //TODO a supprimer pout test uniquement
             return result;
         } else if (pwm == -1 ) {
             goto fail_conf;
         }
 
 fail_conf:
-    free_pwm(pwm_out);
+    pwm_free(pwm_out);
 fail:
     return result;
 }
@@ -386,7 +382,6 @@ static struct class lirc_send_pwm_class = { //TODOI renomage
 static int __init lirc_send_pwm_init(void)
 {
         int result;
-        int active_periode;
 
         /* Init read buffer. */
         result = lirc_buffer_init(&rbuf, sizeof(int), RBUF_LEN);
@@ -424,7 +419,6 @@ static int __init lirc_send_pwm_init(void)
 pwm_free_exit:
         setup_tx(-1);
 
-exit_device_add:
         platform_device_unregister(lirc_send_pwm_dev); /*TODO : verify this line */
 
 exit_device_put:
@@ -461,7 +455,7 @@ static void lirc_send_pwm_exit(void)
 
 static int __init lirc_send_pwm_init_module(void)
 {
-    int result,temp_in_pin,temp_out_pin;
+    int result;
 
         result = lirc_send_pwm_init();
         if (result)
