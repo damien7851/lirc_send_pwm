@@ -166,7 +166,7 @@ static int setup_tx(unsigned int pwm)
 
             hrtimer_init( &hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
             hr_timer.function = &statemachine; //déclaration du callback timer
-            hrtimer_start( &hr_timer,  ms_to_ktime(200L), HRTIMER_MODE_REL ); //TODO a supprimer pout test uniquement
+            hrtimer_start( &hr_timer,  ns_to_ktime(200000000L), HRTIMER_MODE_REL ); //TODO a supprimer pout test uniquement
             return result;
         } else if (pwm == -1 ) {
             goto fail_conf;
