@@ -52,8 +52,8 @@
 #define RBUF_LEN 256
 #define LIRC_TRANSMITTER_LATENCY 256
 
-#define MS_TO_NS(x)	(x * 1E6L)
-#define US_TO_NS(x)	(x * 1E3L)
+
+#define US_TO_NS(x)	(x * 1E3)
 
 #define dprintk(fmt, args...)           \
 do {                                    \
@@ -83,10 +83,10 @@ static struct platform_device *lirc_send_pwm_dev;
 static struct lirc_buffer rbuf;
 
 /* initialized/set in init_timing_params() */
-static unsigned int freq = 38000;
-static unsigned int duty_cycle = 50;
-static unsigned long period;
-static unsigned long pulse_width;
+static int freq = 38000;
+static int duty_cycle = 50;
+static int period;
+static int pulse_width;
 static int *wbuf; //provient de lirc write puisque'on doit acceder depuis le callsback
 static int wbuflength;
 //TODO a complété
@@ -128,21 +128,21 @@ enum hrtimer_restart statemachine( struct hrtimer *timer )
 }
 //fin TODO
 
-static int init_timing_params(unsigned int new_duty_cycle,
-                              unsigned int new_freq)
+static int init_timing_params(int new_duty_cycle,
+                              int new_freq)
 {
     int ret;
-    period = 1000000000L / freq;
+    period = 1000000000 / freq;
     pulse_width = period * duty_cycle / 100;
     ret = pwm_config(pwm_out,period,pulse_width);
     if (ret) {
         printk(KERN_ERR LIRC_DRIVER_NAME ":config pwm fail period or duty mismatch");
     }
-    dprintk("pwm is configured with %u \% duty and %u Hz",new_duty_cycle,new_freq);
+    dprintk("pwm is configured with %d \% duty and %d Hz",new_duty_cycle,new_freq);
     return ret;
 }
 
-static int setup_tx(unsigned int pwm)
+static int setup_tx(int pwm)
 {
     int result;
    
@@ -166,7 +166,7 @@ static int setup_tx(unsigned int pwm)
 
             hrtimer_init( &hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
             hr_timer.function = &statemachine; //déclaration du callback timer
-            hrtimer_start( &hr_timer,  ns_to_ktime(200000000L), HRTIMER_MODE_REL ); //TODO a supprimer pout test uniquement
+            hrtimer_start( &hr_timer,  ns_to_ktime(200000000), HRTIMER_MODE_REL ); //TODO a supprimer pout test uniquement
             return result;
         } else if (pwm == -1 ) {
             goto fail_conf;
